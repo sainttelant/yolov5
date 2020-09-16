@@ -12,7 +12,13 @@ Detector::Detector(const std::string& model_path, const torch::DeviceType& devic
         std::exit(EXIT_FAILURE);
     }
 
+    half_ = (device_ != torch::kCPU);
     module_.to(device_);
+
+    if (half_) {
+        module_.to(torch::kHalf);
+    }
+
     module_.eval();
 }
 
@@ -20,6 +26,11 @@ Detector::Detector(const std::string& model_path, const torch::DeviceType& devic
 std::vector<std::tuple<cv::Rect, float, int>>
 Detector::Run(const cv::Mat& img, float conf_threshold, float iou_threshold) {
     torch::NoGradGuard no_grad;
+    std::cout << "----------New Frame----------" << std::endl;
+
+    /*** Pre-process ***/
+
+    auto start = std::chrono::high_resolution_clock::now();
 
     // keep the original image for visualization purpose
     cv::Mat img_input = img.clone();
@@ -32,15 +43,36 @@ Detector::Run(const cv::Mat& img, float conf_threshold, float iou_threshold) {
     img_input.convertTo(img_input, CV_32FC3, 1.0f / 255.0f);  // normalization 1/255
     auto tensor_img = torch::from_blob(img_input.data, {1, img_input.rows, img_input.cols, img_input.channels()}).to(device_);
 
-    // permute 的用意是交换维度
     tensor_img = tensor_img.permute({0, 3, 1, 2}).contiguous();  // BHWC -> BCHW (Batch, Channel, Height, Width)
+
+    if (half_) {
+        tensor_img = tensor_img.to(torch::kHalf);
+    }
 
     std::vector<torch::jit::IValue> inputs;
     inputs.emplace_back(tensor_img);
+
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    // It should be known that it takes longer time at first time
+    std::cout << "pre-process takes : " << duration.count() << " ms" << std::endl;
+
+    /*** Inference ***/
+
+    start = std::chrono::high_resolution_clock::now();
+
     // inference
     torch::jit::IValue output = module_.forward(inputs);
 
-    torch::Tensor detections = output.toTuple()->elements()[0].toTensor();
+    end = std::chrono::high_resolution_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    // It should be known that it takes longer time at first time
+    std::cout << "inference takes : " << duration.count() << " ms" << std::endl;
+
+    /*** Post-process ***/
+
+    start = std::chrono::high_resolution_clock::now();
+    auto detections = output.toTuple()->elements()[0].toTensor();
 
     // result: n * 7
     // batch index(0), top-left x/y (1,2), bottom-right x/y (3,4), score(5), class id(6)
@@ -66,6 +98,11 @@ Detector::Run(const cv::Mat& img, float conf_threshold, float iou_threshold) {
         demo_data_vec.emplace_back(t);
     }
 
+    end = std::chrono::high_resolution_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    // It should be known that it takes longer time at first time
+    std::cout << "post-process takes : " << duration.count() << " ms" << std::endl;
+
     return demo_data_vec;
 }
 
@@ -89,8 +126,7 @@ std::vector<float> Detector::LetterboxImage(const cv::Mat& src, cv::Mat& dst, co
     int right = (static_cast<int>(out_w)- mid_w + 1) / 2;
 
     cv::copyMakeBorder(dst, dst, top, down, left, right, cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
-    cv::imshow("Border",dst);
-    cv::waitKey(100);
+
     std::vector<float> pad_info{static_cast<float>(left), static_cast<float>(top), scale};
     return pad_info;
 }
@@ -136,15 +172,11 @@ torch::Tensor Detector::PostProcessing(const torch::Tensor& detections, float co
     auto num_classes = detections.size(2) - item_attr_size;  // 80 for coco dataset
 
     // get candidates which object confidence > threshold
-    // auto conf_mask = detections.select(2, 4).ge(conf_thres).unsqueeze(2);
+    auto conf_mask = detections.select(2, 4).ge(conf_thres).unsqueeze(2);
 
-
-    // select() is equivalent to slicing. For example, tensor.select(0, index) is equivalent to tensor[index] and tensor.select(2, index) is equivalent to tensor[:,:,index].
-    torch::Tensor conf_mask = detections.select(2, 4).ge(conf_thres).unsqueeze(2);
-     // unsqueeze(2); 在第二位置扩展一个维度
     // compute overall score = obj_conf * cls_conf, similar to x[:, 5:] *= x[:, 4:5]
-
-    detections.slice(2, item_attr_size, item_attr_size + num_classes) *=detections.select(2, 4).unsqueeze(2);
+    detections.slice(2, item_attr_size, item_attr_size + num_classes) *=
+            detections.select(2, 4).unsqueeze(2);
 
     // convert bounding box format from (center x, center y, width, height) to (x1, y1, x2, y2)
     torch::Tensor box = torch::zeros(detections.sizes(), detections.options());
@@ -159,7 +191,8 @@ torch::Tensor Detector::PostProcessing(const torch::Tensor& detections, float co
 
     // iterating all images in the batch
     for (int batch_i = 0; batch_i < batch_size; batch_i++) {
-        torch::Tensor det = torch::masked_select(detections[batch_i], conf_mask[batch_i]).view({-1, num_classes + item_attr_size});
+        auto det = torch::masked_select(detections[batch_i], conf_mask[batch_i]).view({-1, num_classes + item_attr_size});
+
         // if none remain then process next image
         if (det.size(0) == 0) {
             continue;

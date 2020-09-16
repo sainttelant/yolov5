@@ -3,7 +3,7 @@
 #include <chrono>
 #include <time.h>
 #include "detector.h"
-#include "utils.h"
+#include "cxxopts.hpp"
 
 
 std::vector<std::string> LoadNames(const std::string& path) {
@@ -48,9 +48,9 @@ void Demo(cv::Mat& img,
             int baseline=0;
             auto s_size = cv::getTextSize(s, font_face, font_scale, thickness, &baseline);
             cv::rectangle(img,
-                cv::Point(box.tl().x, box.tl().y - s_size.height - 5),
-                cv::Point(box.tl().x + s_size.width, box.tl().y),
-                cv::Scalar(0, 0, 255), -1);
+                    cv::Point(box.tl().x, box.tl().y - s_size.height - 5),
+                    cv::Point(box.tl().x + s_size.width, box.tl().y),
+                    cv::Scalar(0, 0, 255), -1);
             cv::putText(img, s, cv::Point(box.tl().x, box.tl().y - 5),
                         font_face , font_scale, cv::Scalar(255, 255, 255), thickness);
         }
@@ -63,19 +63,30 @@ void Demo(cv::Mat& img,
 
 
 int main() {
-    //if (argc != 3 && argc != 4) {
-    //    std::cerr << "usage: app <path-to-exported-script-module> <path-to-image> <-gpu>\n";
-    //    std::cerr << "Example: app xxx.pt xxx.jpg -gpu\n";
-    //    return -1;
+   // cxxopts::Options parser(argv[0], "A LibTorch inference implementation of the yolov5");
+
+    // TODO: add other args
+   /* parser.allow_unrecognised_options().add_options()
+            ("weights", "model.torchscript.pt path", cxxopts::value<std::string>())
+            ("source", "source", cxxopts::value<std::string>())
+            ("conf-thres", "object confidence threshold", cxxopts::value<float>()->default_value("0.4"))
+            ("iou-thres", "IOU threshold for NMS", cxxopts::value<float>()->default_value("0.5"))
+            ("gpu", "Enable cuda device or cpu", cxxopts::value<bool>()->default_value("false"))
+            ("view-img", "display results", cxxopts::value<bool>()->default_value("false"))
+            ("h,help", "Print usage");
+
+    auto opt = parser.parse(argc, argv);*/
+
+    //if (opt.count("help")) {
+    //    std::cout << parser.help() << std::endl;
+    //    exit(0);
     //}
 
     // check if gpu flag is set
     bool is_gpu = false;
-    //if(argc == 4) {
-    //    is_gpu = (std::string(argv[3]) == "-gpu");
-    //}
 
     // set device type - CPU/GPU
+
     torch::DeviceType device_type;
     if (torch::cuda::is_available() && is_gpu) {
         device_type = torch::kCUDA;
@@ -95,29 +106,32 @@ int main() {
     }
 
     // load input image
-    std::string imagepath = "../../images/person.jpg";
-    cv::Mat img = cv::imread(imagepath);
+    // std::string source = opt["source"].as<std::string>();
+    std::string source = "../../images/person.jpg";
+    cv::Mat img = cv::imread(source);
     if (img.empty()) {
         std::cerr << "Error loading the image!\n";
         return -1;
     }
 
     // load network
-    std::string modelpath = "../../weights/yolov5m.torchscript.pt";
-    auto detector = Detector(modelpath, device_type);
+    std::string weights = "../../weights/yolov5m.torchscript.pt";
+    auto detector = Detector(weights, device_type);
 
     // inference
-    auto start = std::chrono::high_resolution_clock::now();
-    auto result = detector.Run(img, kConfThreshold, kIouThreshold);
-    auto end = std::chrono::high_resolution_clock::now();
+    float conf_thres = 0.5f;
+    float iou_thres = 0.5f;
+    auto result = detector.Run(img, conf_thres, iou_thres);
 
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+  //  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
     // It should be known that it takes longer time at first time
-    std::cout << "inference taken : " << duration.count() << " ms" << std::endl;
+   // std::cout << "inference taken : " << duration.count() << " ms" << std::endl;
 
     // visualize detections
-    Demo(img, result, class_names);
-    system("PAUSE");
+    if (1) {
+        Demo(img, result, class_names);
+    }
+    system("pause");
     return 0;
 }
